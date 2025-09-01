@@ -16,88 +16,100 @@ const API_URL = `https://graph.facebook.com/v21.0/${PHONE_NUMBER_ID}/messages`;
 
 const sessions = {}; // simple in-memory session store
 
-// ✅ Send plain text message
+// === Helper: Send text ===
 async function sendTextMessage(to, text) {
-  await axios.post(
-    API_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      text: { body: text },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
+  try {
+    await axios.post(
+      API_URL,
+      {
+        messaging_product: "whatsapp",
+        to,
+        text: { body: text },
       },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  } catch (err) {
+    console.error("❌ Error sending text:", err.response?.data || err.message);
+  }
 }
 
-// ✅ Send interactive list
+// === Helper: Send list ===
 async function sendInteractiveList(to, header, body, rows) {
-  await axios.post(
-    API_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "list",
-        header: { type: "text", text: header },
-        body: { text: body },
-        action: {
-          button: "Choose one",
-          sections: [
-            {
-              title: "Available Categories",
-              rows: rows.map((row) => ({
-                id: row.id,
-                title: row.title,
-              })),
-            },
-          ],
+  try {
+    await axios.post(
+      API_URL,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "list",
+          header: { type: "text", text: header },
+          body: { text: body },
+          action: {
+            button: "Choose one",
+            sections: [
+              {
+                title: "Available Categories",
+                rows: rows.map((row) => ({
+                  id: row.id,
+                  title: row.title,
+                })),
+              },
+            ],
+          },
         },
       },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  } catch (err) {
+    console.error("❌ Error sending list:", err.response?.data || err.message);
+  }
 }
 
-// ✅ Send interactive buttons
+// === Helper: Send buttons ===
 async function sendButtons(to, body, buttons) {
-  await axios.post(
-    API_URL,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: body },
-        action: {
-          buttons: buttons.map((b) => ({
-            type: "reply",
-            reply: { id: b.id, title: b.title },
-          })),
+  try {
+    await axios.post(
+      API_URL,
+      {
+        messaging_product: "whatsapp",
+        to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: body },
+          action: {
+            buttons: buttons.map((b) => ({
+              type: "reply",
+              reply: { id: b.id, title: b.title },
+            })),
+          },
         },
       },
-    },
-    {
-      headers: {
-        Authorization: `Bearer ${ACCESS_TOKEN}`,
-        "Content-Type": "application/json",
-      },
-    }
-  );
+      {
+        headers: {
+          Authorization: `Bearer ${ACCESS_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+  } catch (err) {
+    console.error("❌ Error sending buttons:", err.response?.data || err.message);
+  }
 }
 
-// ✅ Webhook verification (GET)
+// === Webhook verification ===
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -110,12 +122,16 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// ✅ Webhook events (POST)
+// === Webhook events ===
 app.post("/webhook", async (req, res) => {
   try {
-    const change = req.body.entry?.[0]?.changes?.[0];
+    const entry = req.body.entry?.[0];
+    const change = entry?.changes?.[0];
     const message = change?.value?.messages?.[0];
 
+    console.log("📩 Incoming webhook:", JSON.stringify(req.body, null, 2));
+
+    // ignore if no message
     if (!message) return res.sendStatus(200);
 
     const from = message.from;
@@ -126,7 +142,7 @@ app.post("/webhook", async (req, res) => {
     }
     const session = sessions[from];
 
-    // 🟢 STEP 0 → Greet & Show categories
+    // === STEP 0: Greeting ===
     if (session.step === 0) {
       if (type === "text") {
         await sendTextMessage(from, "👋 Hi! Welcome to *Yagya E-Waste Service* ♻️");
@@ -148,9 +164,9 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🟢 STEP 1 → After category selected
+    // === STEP 1: Category ===
     if (session.step === 1 && type === "interactive") {
-      const category = message.interactive.list_reply?.id;
+      const category = message.interactive?.list_reply?.id;
       session.category = category;
       session.step = 2;
       await sendTextMessage(from, `✅ Category selected: *${category}*`);
@@ -158,7 +174,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🟢 STEP 2 → Quantity input
+    // === STEP 2: Quantity ===
     if (session.step === 2 && type === "text") {
       session.quantity = message.text.body;
       session.step = 3;
@@ -166,7 +182,7 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🟢 STEP 3 → Address input
+    // === STEP 3: Address ===
     if (session.step === 3 && type === "text") {
       session.address = message.text.body;
       session.step = 4;
@@ -177,9 +193,9 @@ app.post("/webhook", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // 🟢 STEP 4 → Confirmation
+    // === STEP 4: Confirmation ===
     if (session.step === 4 && type === "interactive") {
-      const choice = message.interactive.button_reply.id;
+      const choice = message.interactive?.button_reply?.id;
       if (choice === "confirm_yes") {
         await sendTextMessage(
           from,
@@ -188,7 +204,7 @@ app.post("/webhook", async (req, res) => {
       } else {
         await sendTextMessage(from, "❌ Pickup request cancelled.");
       }
-      delete sessions[from]; // reset session
+      delete sessions[from];
       return res.sendStatus(200);
     }
 
@@ -199,7 +215,7 @@ app.post("/webhook", async (req, res) => {
   }
 });
 
-// ✅ Start server
+// === Start server ===
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
