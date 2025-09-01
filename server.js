@@ -789,6 +789,7 @@
 import express from "express";
 import dotenv from "dotenv";
 import axios from "axios";
+
 dotenv.config();
 
 const app = express();
@@ -799,12 +800,13 @@ const META_WA_ACCESS_TOKEN = process.env.META_WA_ACCESS_TOKEN;
 const OWNER_WA_NUMBER = process.env.OWNER_WA_NUMBER;
 const sessions = {};
 
+// 🔹 Send plain text message
 async function sendMessage(to, body) {
   await axios.post(
     META_WA_API_URL,
     {
       messaging_product: "whatsapp",
-      to: to.replace(/^whatsapp:/, ""),
+      to,
       type: "text",
       text: { body },
     },
@@ -817,12 +819,13 @@ async function sendMessage(to, body) {
   );
 }
 
+// 🔹 Send interactive buttons
 async function sendButtons(to, body, buttons) {
   await axios.post(
     META_WA_API_URL,
     {
       messaging_product: "whatsapp",
-      to: to.replace(/^whatsapp:/, ""),
+      to,
       type: "interactive",
       interactive: {
         type: "button",
@@ -844,6 +847,7 @@ async function sendButtons(to, body, buttons) {
   );
 }
 
+// 🔹 Options
 const CATEGORY_OPTIONS = [
   { id: "cat_1", title: "Electronics-Waste" },
   { id: "cat_2", title: "Plastic Waste" },
@@ -886,49 +890,53 @@ const PAYMENT_METHODS = [
   { id: "payment_account", title: "Account" },
 ];
 
+// 🔹 Routes
 app.get("/", (req, res) => {
   res.send("Hello World");
 });
 
+// 🔹 Webhook Verification
 app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = "my_verify_token";
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "my_verify_token";
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
+
   if (mode && token) {
     if (mode === "subscribe" && token === VERIFY_TOKEN) {
-      console.log("Webhook verified");
+      console.log("Webhook verified ✅");
       return res.status(200).send(challenge);
     } else {
-      console.log("Verification token mismatch");
+      console.log("Verification token mismatch ❌");
       return res.sendStatus(403);
     }
   }
-  res.sendStatus(400);
+  return res.sendStatus(400);
 });
 
+// 🔹 Webhook Event Handler
 app.post("/webhook", async (req, res) => {
   try {
-    const entry = req.body.entry?.[0];
-    const changes = entry?.changes?.[0];
-    const message = changes?.value?.messages?.[0];
+    const message = req.body?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
     if (!message) return res.sendStatus(200);
-    const from = "whatsapp:" + message.from;
+
+    const from = message.from; // ✅ use clean number (no "whatsapp:" prefix)
     let msgRaw = "";
+
     if (message.text?.body) {
       msgRaw = message.text.body;
     } else if (message.interactive?.button_reply) {
       msgRaw = message.interactive.button_reply.id;
     }
 
-    // Start conversation on any incoming message, send welcome if no session
+    // Start conversation if no session
     if (!sessions[from]) {
       sessions[from] = { step: "awaiting_category" };
-      await sendMessage(
+      await sendButtons(
         from,
-        "👋 Welcome to *Yagya* ♻️ — your e-waste solution partner.\nPlease choose Category of Waste you want pick up:"
+        "👋 Welcome to *Yagya* ♻️ — your e-waste solution partner.\n\nPlease choose Category of Waste you want pick up:",
+        CATEGORY_OPTIONS
       );
-      await sendButtons(from, "Choose Category:", CATEGORY_OPTIONS);
       return res.sendStatus(200);
     }
 
@@ -1053,7 +1061,7 @@ app.post("/webhook", async (req, res) => {
 ✅ Pickup confirmed! Your order has been logged. Thank you for choosing Yagya ♻️
 `;
           await sendMessage(from, summaryMessage);
-          await sendMessage("whatsapp:" + OWNER_WA_NUMBER, "New booking:\n" + summaryMessage);
+          await sendMessage(OWNER_WA_NUMBER, "New booking:\n" + summaryMessage);
           delete sessions[from];
         } else if (msgRaw.toLowerCase() === "cancel") {
           await sendMessage(from, "❌ Order cancelled. Send any message to restart.");
@@ -1063,17 +1071,21 @@ app.post("/webhook", async (req, res) => {
         }
         break;
       default:
-        await sendMessage(from, "👋 Welcome! Please select category:");
-        await sendButtons(from, "Choose Category:", CATEGORY_OPTIONS);
-        session.step = "awaiting_category";
+        delete sessions[from];
+        await sendButtons(
+          from,
+          "👋 Session expired. Please choose Category to start again:",
+          CATEGORY_OPTIONS
+        );
     }
     return res.sendStatus(200);
   } catch (error) {
-    console.error("Error in /webhook webhook:", error);
+    console.error("Error in /webhook:", error.response?.data || error.message);
     return res.sendStatus(500);
   }
 });
 
+// 🔹 Booking summary
 async function sendBookingSummary(to, session) {
   const summary = `Here’s your booking summary:
 📦 Items: ${session.category}${session.volume ? ` (${session.volume})` : ""}
@@ -1088,5 +1100,6 @@ Reply *confirm* to place your order or *cancel* to abort.
   await sendMessage(to, summary);
 }
 
+// 🔹 Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server started on port ${PORT}`));
