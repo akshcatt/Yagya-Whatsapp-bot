@@ -2,6 +2,7 @@ import express from "express";
 import axios from "axios";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
+import redis from "redis";
 
 dotenv.config();
 const app = express();
@@ -9,12 +10,15 @@ app.use(bodyParser.json());
 
 const token = process.env.WHATSAPP_TOKEN;
 const verifyToken = process.env.VERIFY_TOKEN;
-
 const ownerNumber = process.env.OWNER_WHATSAPP_NUMBER; // best practice
 
+// Redis client setup
+const redisClient = redis.createClient({
+  url: process.env.REDIS_URL || "redis://localhost:6379",
+});
 
-// 🔹 Session memory
-let userSessions = {};
+redisClient.on("error", (err) => console.error("Redis Client Error", err));
+await redisClient.connect();
 
 // ------------------ HELPER FUNCTIONS ------------------
 async function sendTextMessage(to, text) {
@@ -39,7 +43,7 @@ async function sendInteractiveButtons(to, body, buttons) {
       interactive: {
         type: "button",
         body: { text: body },
-        action: { buttons: buttons.map(b => ({ type: "reply", reply: b })) },
+        action: { buttons: buttons.map((b) => ({ type: "reply", reply: b })) },
       },
     },
     { headers: { Authorization: `Bearer ${token}` } }
@@ -62,7 +66,7 @@ async function sendInteractiveList(to, header, body, options) {
           sections: [
             {
               title: "Available Options",
-              rows: options.map(o => ({
+              rows: options.map((o) => ({
                 id: o.id,
                 title: o.title,
               })),
@@ -74,9 +78,25 @@ async function sendInteractiveList(to, header, body, options) {
     { headers: { Authorization: `Bearer ${token}` } }
   );
 }
+
 app.get("/", (req, res) => {
-  res.send("Hello Guys CHATBOT chalne ko ready hai!!")
-})
+  res.send("Hello Guys CHATBOT chalne ko ready hai!!");
+});
+
+// Helper to get/set session from Redis
+async function getSession(userId) {
+  const data = await redisClient.get(`session:${userId}`);
+  return data ? JSON.parse(data) : { step: 0, data: {} };
+}
+
+async function setSession(userId, session) {
+  await redisClient.set(`session:${userId}`, JSON.stringify(session));
+}
+
+async function deleteSession(userId) {
+  await redisClient.del(`session:${userId}`);
+}
+
 // ------------------ MAIN LOGIC ------------------
 app.post("/webhook", async (req, res) => {
   try {
@@ -88,25 +108,12 @@ app.post("/webhook", async (req, res) => {
       const from = messages.from;
       const type = messages.type;
 
-      // Ensure session exists
-      if (!userSessions[from]) {
-        userSessions[from] = { step: 0, data: {} };
-      }
+      // Load or initialize session
+      let session = await getSession(from);
 
-      const session = userSessions[from];
-
-      // ---- HANDLE INTERACTIVE REPLIES ----
-      let selection = null;
-      if (type === "interactive") {
-        if (messages.interactive.type === "button_reply") {
-          selection = messages.interactive.button_reply.id;
-        } else if (messages.interactive.type === "list_reply") {
-          selection = messages.interactive.list_reply.id;
-        }
-      }
-
-      // ---- FLOW STEPS ----
+      // Send welcome and start flow if session step is 0 (new or reset)
       if (session.step === 0) {
+        await sendTextMessage(from, "Yagya waste solutions welcome you on board 🤝");
         await sendInteractiveList(
           from,
           "♻️ Yagya E-Waste Service",
@@ -121,9 +128,22 @@ app.post("/webhook", async (req, res) => {
           ]
         );
         session.step = 1;
+        await setSession(from, session);
+        return res.sendStatus(200); // End here to wait for user selection
       }
 
-      else if (session.step === 1 && selection) {
+      // Handle interactive replies (buttons or lists)
+      let selection = null;
+      if (type === "interactive") {
+        if (messages.interactive.type === "button_reply") {
+          selection = messages.interactive.button_reply.id;
+        } else if (messages.interactive.type === "list_reply") {
+          selection = messages.interactive.list_reply.id;
+        }
+      }
+
+      // FLOW STEPS
+      if (session.step === 1 && selection) {
         session.data.category = selection;
         await sendInteractiveButtons(from, "Choose your pickup vehicle:", [
           { id: "bike", title: "🏍️ Bike" },
@@ -131,46 +151,50 @@ app.post("/webhook", async (req, res) => {
           { id: "truck", title: "🚛 Truck" },
         ]);
         session.step = 2;
-      }
-
-      else if (session.step === 2 && selection) {
+        await setSession(from, session);
+      } else if (session.step === 2 && selection) {
         session.data.vehicle = selection;
         await sendTextMessage(from, "Enter the approximate weight (in kg):");
         session.step = 3;
-      }
-
-      else if (session.step === 3 && messages.text) {
+        await setSession(from, session);
+      } else if (session.step === 3 && messages.text) {
         session.data.weight = messages.text.body;
         await sendTextMessage(from, "Please enter your pickup address:");
         session.step = 4;
-      }
-
-      else if (session.step === 4 && messages.text) {
+        await setSession(from, session);
+      } else if (session.step === 4 && messages.text) {
         session.data.address = messages.text.body;
-        await sendTextMessage(from, "Enter preferred pickup date (DD-MM-YYYY):");
+        // Offer next 5 days as pickup dates using buttons (simulated calendar)
+        const today = new Date();
+        const dateOptions = [];
+        for (let i = 0; i < 5; i++) {
+          const date = new Date(today);
+          date.setDate(today.getDate() + i);
+          const id = date.toISOString().slice(0, 10);
+          const title = date.toLocaleDateString();
+          dateOptions.push({ id, title });
+        }
+        await sendInteractiveButtons(from, "Select a pickup date:", dateOptions);
         session.step = 5;
-      }
-
-      else if (session.step === 5 && messages.text) {
-        session.data.date = messages.text.body;
+        await setSession(from, session);
+      } else if (session.step === 5 && selection) {
+        session.data.date = selection;
         await sendInteractiveButtons(from, "Select a pickup time slot:", [
           { id: "slot1", title: "10AM–12PM" },
           { id: "slot2", title: "12PM–4PM" },
           { id: "slot3", title: "4PM–7PM" },
         ]);
         session.step = 6;
-      }
-
-      else if (session.step === 6 && selection) {
+        await setSession(from, session);
+      } else if (session.step === 6 && selection) {
         session.data.time = selection;
         await sendInteractiveButtons(from, "Choose a payment method:", [
           { id: "upi", title: "💳 UPI" },
           { id: "cod", title: "💵 Cash on Pickup" },
         ]);
         session.step = 7;
-      }
-
-      else if (session.step === 7 && selection) {
+        await setSession(from, session);
+      } else if (session.step === 7 && selection) {
         session.data.payment = selection;
 
         await sendTextMessage(
@@ -183,12 +207,14 @@ app.post("/webhook", async (req, res) => {
           `🔔 New Order Received!\n\nCustomer: ${from}\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight} kg\nAddress: ${session.data.address}\nDate: ${session.data.date}\nTime: ${session.data.time}\nPayment: ${session.data.payment}`
         );
 
-        delete userSessions[from]; // reset session
+        await deleteSession(from); // reset session
       }
 
+      res.sendStatus(200);
+    } else {
+      // For any other call without messages
+      res.sendStatus(200);
     }
-
-    res.sendStatus(200);
   } catch (err) {
     console.error("Webhook error:", err.response?.data || err.message);
     res.sendStatus(500);
@@ -198,10 +224,10 @@ app.post("/webhook", async (req, res) => {
 // ------------------ VERIFY WEBHOOK ------------------
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
+  const tokenParam = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
 
-  if (mode && token && mode === "subscribe" && token === verifyToken) {
+  if (mode && tokenParam && mode === "subscribe" && tokenParam === verifyToken) {
     res.status(200).send(challenge);
   } else {
     res.sendStatus(403);
