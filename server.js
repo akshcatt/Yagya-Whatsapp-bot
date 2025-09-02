@@ -12,15 +12,25 @@ const token = process.env.WHATSAPP_TOKEN;
 const verifyToken = process.env.VERIFY_TOKEN;
 const ownerNumber = process.env.OWNER_WHATSAPP_NUMBER; // best practice
 
-// Redis client setup
+// Redis client setup for Redis Cloud
 const redisClient = redis.createClient({
-  url: process.env.REDIS_URL || "redis://localhost:6379",
+  socket: {
+    host: process.env.REDIS_HOSTNAME,
+    port: Number(process.env.REDIS_PORT),
+  },
+  password: process.env.REDIS_PASSWORD,
 });
 
 redisClient.on("error", (err) => console.error("Redis Client Error", err));
-await redisClient.connect();
 
-// ------------------ HELPER FUNCTIONS ------------------
+async function connectRedis() {
+  if (!redisClient.isOpen) {
+    await redisClient.connect();
+  }
+}
+await connectRedis();
+
+// Helper functions
 async function sendTextMessage(to, text) {
   await axios.post(
     `https://graph.facebook.com/v17.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -83,7 +93,6 @@ app.get("/", (req, res) => {
   res.send("Hello Guys CHATBOT chalne ko ready hai!!");
 });
 
-// Helper to get/set session from Redis
 async function getSession(userId) {
   const data = await redisClient.get(`session:${userId}`);
   return data ? JSON.parse(data) : { step: 0, data: {} };
@@ -97,7 +106,23 @@ async function deleteSession(userId) {
   await redisClient.del(`session:${userId}`);
 }
 
-// ------------------ MAIN LOGIC ------------------
+async function sendWelcomeFlow(to) {
+  await sendTextMessage(to, "Yagya waste solutions welcome you on board 🤝. If you want to cancel the order at any time, type 'cancel'.");
+  await sendInteractiveList(
+    to,
+    "♻️ Yagya E-Waste Service",
+    "Select the type of waste:",
+    [
+      { id: "electronics", title: "Electronics" },
+      { id: "plastic", title: "Plastic" },
+      { id: "glass", title: "Glass" },
+      { id: "metal", title: "Metal" },
+      { id: "paper", title: "Paper & Cardboard" },
+      { id: "multiple", title: "Multiple Types" },
+    ]
+  );
+}
+
 app.post("/webhook", async (req, res) => {
   try {
     const entry = req.body.entry?.[0];
@@ -108,31 +133,35 @@ app.post("/webhook", async (req, res) => {
       const from = messages.from;
       const type = messages.type;
 
-      // Load or initialize session
       let session = await getSession(from);
 
-      // Send welcome and start flow if session step is 0 (new or reset)
-      if (session.step === 0) {
-        await sendTextMessage(from, "Yagya waste solutions welcome you on board 🤝");
-        await sendInteractiveList(
-          from,
-          "♻️ Yagya E-Waste Service",
-          "Select the type of waste:",
-          [
-            { id: "electronics", title: "Electronics" },
-            { id: "plastic", title: "Plastic" },
-            { id: "glass", title: "Glass" },
-            { id: "metal", title: "Metal" },
-            { id: "paper", title: "Paper & Cardboard" },
-            { id: "multiple", title: "Multiple Types" },
-          ]
-        );
-        session.step = 1;
+      const userText = messages.text?.body?.trim().toLowerCase() || "";
+
+      const greetings = ["hi", "hello", "hey", "start", "hii"];
+      if (greetings.includes(userText)) {
+        await deleteSession(from);
+        await sendWelcomeFlow(from);
+        session = { step: 1, data: {} };
         await setSession(from, session);
-        return res.sendStatus(200); // End here to wait for user selection
+        return res.sendStatus(200);
       }
 
-      // Handle interactive replies (buttons or lists)
+      if (userText === "cancel") {
+        await deleteSession(from);
+        await sendTextMessage(from, "Your order has been cancelled. Starting over...");
+        await sendWelcomeFlow(from);
+        session = { step: 1, data: {} };
+        await setSession(from, session);
+        return res.sendStatus(200);
+      }
+
+      if (session.step === 0) {
+        await sendWelcomeFlow(from);
+        session.step = 1;
+        await setSession(from, session);
+        return res.sendStatus(200);
+      }
+
       let selection = null;
       if (type === "interactive") {
         if (messages.interactive.type === "button_reply") {
@@ -142,7 +171,6 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      // FLOW STEPS
       if (session.step === 1 && selection) {
         session.data.category = selection;
         await sendInteractiveButtons(from, "Choose your pickup vehicle:", [
@@ -164,17 +192,36 @@ app.post("/webhook", async (req, res) => {
         await setSession(from, session);
       } else if (session.step === 4 && messages.text) {
         session.data.address = messages.text.body;
-        // Offer next 5 days as pickup dates using buttons (simulated calendar)
+
         const today = new Date();
-        const dateOptions = [];
-        for (let i = 0; i < 5; i++) {
-          const date = new Date(today);
-          date.setDate(today.getDate() + i);
-          const id = date.toISOString().slice(0, 10);
-          const title = date.toLocaleDateString();
-          dateOptions.push({ id, title });
-        }
-        await sendInteractiveButtons(from, "Select a pickup date:", dateOptions);
+        const tomorrow = new Date();
+        tomorrow.setDate(today.getDate() + 1);
+        const dayAfterTomorrow = new Date();
+        dayAfterTomorrow.setDate(today.getDate() + 2);
+
+        await sendInteractiveButtons(from, "Select a pickup date:", [
+          {
+            id: today.toISOString().slice(0, 10),
+            title: `Today (${today.toLocaleDateString("en-GB", {
+              month: "2-digit",
+              day: "2-digit",
+            })})`,
+          },
+          {
+            id: tomorrow.toISOString().slice(0, 10),
+            title: `Tomorrow (${tomorrow.toLocaleDateString("en-GB", {
+              month: "2-digit",
+              day: "2-digit",
+            })})`,
+          },
+          {
+            id: dayAfterTomorrow.toISOString().slice(0, 10),
+            title: `Day After (${dayAfterTomorrow.toLocaleDateString("en-GB", {
+              month: "2-digit",
+              day: "2-digit",
+            })})`,
+          },
+        ]);
         session.step = 5;
         await setSession(from, session);
       } else if (session.step === 5 && selection) {
@@ -207,21 +254,19 @@ app.post("/webhook", async (req, res) => {
           `🔔 New Order Received!\n\nCustomer: ${from}\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight} kg\nAddress: ${session.data.address}\nDate: ${session.data.date}\nTime: ${session.data.time}\nPayment: ${session.data.payment}`
         );
 
-        await deleteSession(from); // reset session
+        await deleteSession(from);
       }
 
       res.sendStatus(200);
     } else {
-      // For any other call without messages
       res.sendStatus(200);
     }
-  } catch (err) {
-    console.error("Webhook error:", err.response?.data || err.message);
+  } catch (error) {
+    console.error("Webhook error:", error.response?.data || error.message);
     res.sendStatus(500);
   }
 });
 
-// ------------------ VERIFY WEBHOOK ------------------
 app.get("/webhook", (req, res) => {
   const mode = req.query["hub.mode"];
   const tokenParam = req.query["hub.verify_token"];
@@ -234,5 +279,4 @@ app.get("/webhook", (req, res) => {
   }
 });
 
-// ------------------ START SERVER ------------------
 app.listen(3000, () => console.log("✅ WhatsApp Bot running on port 3000"));
