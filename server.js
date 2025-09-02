@@ -372,30 +372,6 @@ async function sendInteractiveList(to, header, body, options) {
   );
 }
 
-async function requestLiveLocation(to) {
-  await axios.post(
-    `https://graph.facebook.com/v17.0/${process.env.PHONE_NUMBER_ID}/messages`,
-    {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive: {
-        type: "button",
-        body: { text: "Please share your live location for accurate pickup (or type your address)." },
-        action: {
-          buttons: [
-            {
-              type: "location_request",
-              reply: { id: "location_share", title: "Share Location" },
-            },
-          ],
-        },
-      },
-    },
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-}
-
 app.get("/", (req, res) => {
   res.send("Hello Guys CHATBOT chalne ko ready hai!!");
 });
@@ -493,98 +469,43 @@ app.post("/webhook", async (req, res) => {
         await setSession(from, session);
       } else if (session.step === 3 && messages.text) {
         session.data.weight = messages.text.body;
-        // Request live location instead of address text input
-        await requestLiveLocation(from);
+        await sendTextMessage(from, "Please enter your complete address for pick up:");
         session.step = 4;
         await setSession(from, session);
-      } else if (session.step === 4) {
-        if (type === "location" && messages.location) {
-          // User shared live location
-          const { latitude, longitude } = messages.location;
-          session.data.location = { latitude, longitude };
-          const mapsLink = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      } else if (session.step === 4 && messages.text) {
+        session.data.address = messages.text.body;
 
-          await sendTextMessage(from, `Received your location. Pickup will be arranged accordingly.`);
+        const today = new Date();
+        const tomorrow = new Date();
+        tomorrow.setDate(today.getDate() + 1);
+        const dayAfterTomorrow = new Date();
+        dayAfterTomorrow.setDate(today.getDate() + 2);
 
-          // Send partial order info with location to owner
-          await sendTextMessage(
-            ownerNumber,
-            `🔔 New Order Location Received!\n\nCustomer: ${from}\nLocation: ${mapsLink}\n\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight} kg`
-          );
-
-          // Proceed to pickup date selection
-          const today = new Date();
-          const tomorrow = new Date();
-          tomorrow.setDate(today.getDate() + 1);
-          const dayAfterTomorrow = new Date();
-          dayAfterTomorrow.setDate(today.getDate() + 2);
-
-          await sendInteractiveButtons(from, "Select a pickup date:", [
-            {
-              id: today.toISOString().slice(0, 10),
-              title: `Today (${today.toLocaleDateString("en-GB", {
-                month: "2-digit",
-                day: "2-digit",
-              })})`,
-            },
-            {
-              id: tomorrow.toISOString().slice(0, 10),
-              title: `Tomorrow (${tomorrow.toLocaleDateString("en-GB", {
-                month: "2-digit",
-                day: "2-digit",
-              })})`,
-            },
-            {
-              id: dayAfterTomorrow.toISOString().slice(0, 10),
-              title: `Day After (${dayAfterTomorrow.toLocaleDateString("en-GB", {
-                month: "2-digit",
-                day: "2-digit",
-              })})`,
-            },
-          ]);
-          session.step = 5;
-          await setSession(from, session);
-        } else if (type === "text" && messages.text) {
-          // User typed address instead of location
-          session.data.address = messages.text.body;
-          await sendTextMessage(
-            from,
-            "For better accuracy, please consider sharing your live location anytime during the chat (or proceed with your typed address)."
-          );
-
-          // Let user select the date after providing address
-          const today = new Date();
-          const tomorrow = new Date();
-          tomorrow.setDate(today.getDate() + 1);
-          const dayAfterTomorrow = new Date();
-          dayAfterTomorrow.setDate(today.getDate() + 2);
-
-          await sendInteractiveButtons(from, "Select a pickup date:", [
-            {
-              id: today.toISOString().slice(0, 10),
-              title: `Today (${today.toLocaleDateString("en-GB", {
-                month: "2-digit",
-                day: "2-digit",
-              })})`,
-            },
-            {
-              id: tomorrow.toISOString().slice(0, 10),
-              title: `Tomorrow (${tomorrow.toLocaleDateString("en-GB", {
-                month: "2-digit",
-                day: "2-digit",
-              })})`,
-            },
-            {
-              id: dayAfterTomorrow.toISOString().slice(0, 10),
-              title: `Day After (${dayAfterTomorrow.toLocaleDateString("en-GB", {
-                month: "2-digit",
-                day: "2-digit",
-              })})`,
-            },
-          ]);
-          session.step = 5;
-          await setSession(from, session);
-        }
+        await sendInteractiveButtons(from, "Select a pickup date:", [
+          {
+            id: today.toISOString().slice(0, 10),
+            title: `Today (${today.toLocaleDateString("en-GB", {
+              month: "2-digit",
+              day: "2-digit",
+            })})`,
+          },
+          {
+            id: tomorrow.toISOString().slice(0, 10),
+            title: `Tomorrow (${tomorrow.toLocaleDateString("en-GB", {
+              month: "2-digit",
+              day: "2-digit",
+            })})`,
+          },
+          {
+            id: dayAfterTomorrow.toISOString().slice(0, 10),
+            title: `Day After (${dayAfterTomorrow.toLocaleDateString("en-GB", {
+              month: "2-digit",
+              day: "2-digit",
+            })})`,
+          },
+        ]);
+        session.step = 5;
+        await setSession(from, session);
       } else if (session.step === 5 && selection) {
         session.data.date = selection;
         await sendInteractiveButtons(from, "Select a pickup time slot:", [
@@ -607,20 +528,14 @@ app.post("/webhook", async (req, res) => {
 
         await sendTextMessage(
           from,
-          `✅ Booking Confirmed!\n\n📌 Category: ${session.data.category}\n🚚 Vehicle: ${session.data.vehicle}\n⚖️ Weight: ${session.data.weight} kg\n🏠 Address: ${
-            session.data.address || "Location shared"
-          }\n📅 Date: ${session.data.date}\n⏰ Time: ${session.data.time}\n💰 Payment: ${session.data.payment}\n\nThank you for using Yagya ♻️`
+          `✅ Booking Confirmed!\n\n📌 Category: ${session.data.category}\n🚚 Vehicle: ${session.data.vehicle}\n⚖️ Weight: ${session.data.weight} kg\n🏠 Address: ${session.data.address}\n📅 Date: ${session.data.date}\n⏰ Time: ${session.data.time}\n💰 Payment: ${session.data.payment}\n\nThank you for using Yagya ♻️`
         );
 
-        // Send order received notification to owner
-        let ownerMessage = `🔔 New Order Received!\n\nCustomer: ${from}\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight} kg\nDate: ${session.data.date}\nTime: ${session.data.time}\nPayment: ${session.data.payment}\n`;
-        if (session.data.address) {
-          ownerMessage += `Address: ${session.data.address}\n`;
-        } else if (session.data.location) {
-          ownerMessage += `Location: https://www.google.com/maps?q=${session.data.location.latitude},${session.data.location.longitude}\n`;
-        }
-
-        await sendTextMessage(ownerNumber, ownerMessage);
+        // Send order received notification to owner (this is the part reintegrated)
+        await sendTextMessage(
+          ownerNumber,
+          `🔔 New Order Received!\n\nCustomer: ${from}\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight} kg\nAddress: ${session.data.address}\nDate: ${session.data.date}\nTime: ${session.data.time}\nPayment: ${session.data.payment}`
+        );
 
         await deleteSession(from);
       }
