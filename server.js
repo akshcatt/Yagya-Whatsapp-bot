@@ -287,27 +287,27 @@ import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import redis from "redis";
 
-import mongoose from "mongoose";
+// import mongoose from "mongoose";
 
-mongoose.connect(process.env.MONGODB_URL, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
-})
-  .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.error("MongoDB Connection Error:", err));
+// mongoose.connect(process.env.MONGODB_URL, {
+//   useNewUrlParser: true,
+//   useUnifiedTopology: true,
+// })
+//   .then(() => console.log("✅ MongoDB Connected"))
+//   .catch((err) => console.error("MongoDB Connection Error:", err));
 
-const orderSchema = new mongoose.Schema({
-  customer: String,
-  category: String,
-  vehicle: String,
-  weight: String,
-  address: String,
-  date: String,
-  time: String,
-  payment: String
-});
+// const orderSchema = new mongoose.Schema({
+//   customer: String,
+//   category: String,
+//   vehicle: String,
+//   weight: String,
+//   address: String,
+//   date: String,
+//   time: String,
+//   payment: String
+// });
 
-const Order = mongoose.model("Order", orderSchema);
+// const Order = mongoose.model("Order", orderSchema);
 
 dotenv.config();
 const app = express();
@@ -559,21 +559,21 @@ app.post("/webhook", async (req, res) => {
           `🔔 New Order Received!\n\nCustomer: ${from}\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight} kg\nAddress: ${session.data.address}\nDate: ${session.data.date}\nTime: ${session.data.time}\nPayment: ${session.data.payment}`
         );
 
-        const newOrder = new Order({
-          customer: from,
-          category: session.data.category,
-          vehicle: session.data.vehicle,
-          weight: session.data.weight,
-          address: session.data.address,
-          date: session.data.date,
-          time: session.data.time,
-          payment: session.data.payment
-        });
-        try {
-          await newOrder.save();
-        } catch (err) {
-          console.error("MongoDB order save failed:", err);
-        }
+        // const newOrder = new Order({
+        //   customer: from,
+        //   category: session.data.category,
+        //   vehicle: session.data.vehicle,
+        //   weight: session.data.weight,
+        //   address: session.data.address,
+        //   date: session.data.date,
+        //   time: session.data.time,
+        //   payment: session.data.payment
+        // });
+        // try {
+        //   await newOrder.save();
+        // } catch (err) {
+        //   console.error("MongoDB order save failed:", err);
+        // }
 
 
         await deleteSession(from);
