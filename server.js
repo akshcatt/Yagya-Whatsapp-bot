@@ -569,7 +569,11 @@ app.post("/webhook", async (req, res) => {
           time: session.data.time,
           payment: session.data.payment
         });
-        await newOrder.save();
+        try {
+          await newOrder.save();
+        } catch (err) {
+          console.error("MongoDB order save failed:", err);
+        }
 
 
         await deleteSession(from);
