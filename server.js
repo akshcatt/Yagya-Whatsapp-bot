@@ -148,6 +148,16 @@ async function sendWelcomeFlow(to) {
   );
 }
 
+// ------------------ SERVER STATUS ROUTE ------------------
+app.get("/", (req, res) => {
+  res.send(`
+    <h2>✅ Yagya WhatsApp Bot Server</h2>
+    <p>Status: Running</p>
+    <p>Current Time (UTC): ${new Date().toISOString()}</p>
+  `);
+});
+
+
 // ------------------ MAIN LOGIC ------------------
 app.post("/webhook", async (req, res) => {
   try {
