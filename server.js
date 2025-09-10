@@ -3,16 +3,18 @@ import axios from "axios";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 import redis from "redis";
+import mongoose from "mongoose";
 
 dotenv.config();
 const app = express();
 app.use(bodyParser.json());
 
+// ------------------ ENV VARIABLES ------------------
 const token = process.env.WHATSAPP_TOKEN;
 const verifyToken = process.env.VERIFY_TOKEN;
 const ownerNumber = process.env.OWNER_WHATSAPP_NUMBER;
 
-// Redis client setup for Redis Cloud
+// ------------------ REDIS SETUP ------------------
 const redisClient = redis.createClient({
   socket: {
     host: process.env.REDIS_HOSTNAME,
@@ -22,7 +24,6 @@ const redisClient = redis.createClient({
 });
 
 redisClient.on("error", (err) => console.error("Redis Client Error", err));
-
 async function connectRedis() {
   if (!redisClient.isOpen) {
     await redisClient.connect();
@@ -31,7 +32,31 @@ async function connectRedis() {
 }
 connectRedis();
 
-// ------------------ Helper Functions ------------------
+// ------------------ MONGODB SETUP ------------------
+mongoose
+  .connect(process.env.MONGODB_URL, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ Connected to MongoDB"))
+  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
+
+const orderSchema = new mongoose.Schema(
+  {
+    customer: String,
+    category: String,
+    vehicle: String,
+    weight: String,
+    address: String,
+    date: String,
+    time: String,
+    payment: String,
+  },
+  { timestamps: true }
+);
+const Order = mongoose.model("Order", orderSchema);
+
+// ------------------ HELPER FUNCTIONS ------------------
 async function sendTextMessage(to, text) {
   await axios.post(
     `https://graph.facebook.com/v17.0/${process.env.PHONE_NUMBER_ID}/messages`,
@@ -90,19 +115,19 @@ async function sendInteractiveList(to, header, body, options) {
   );
 }
 
+// ------------------ SESSION FUNCTIONS ------------------
 async function getSession(userId) {
   const data = await redisClient.get(`session:${userId}`);
   return data ? JSON.parse(data) : { step: 0, data: {} };
 }
-
 async function setSession(userId, session) {
   await redisClient.set(`session:${userId}`, JSON.stringify(session));
 }
-
 async function deleteSession(userId) {
   await redisClient.del(`session:${userId}`);
 }
 
+// ------------------ WELCOME FLOW ------------------
 async function sendWelcomeFlow(to) {
   await sendTextMessage(
     to,
@@ -137,7 +162,7 @@ app.post("/webhook", async (req, res) => {
       let session = await getSession(from);
       const userText = messages.text?.body?.trim().toLowerCase() || "";
 
-      // cancel handling
+      // Cancel flow
       if (userText === "cancel") {
         await deleteSession(from);
         await sendTextMessage(from, "❌ Your order has been cancelled.");
@@ -147,7 +172,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // first-time flow
+      // First time flow
       if (session.step === 0) {
         await sendWelcomeFlow(from);
         session.step = 1;
@@ -155,6 +180,7 @@ app.post("/webhook", async (req, res) => {
         return res.sendStatus(200);
       }
 
+      // Interactive replies
       let selection = null;
       if (type === "interactive") {
         if (messages.interactive.type === "button_reply") {
@@ -164,18 +190,14 @@ app.post("/webhook", async (req, res) => {
         }
       }
 
-      // Conversation Flow
+      // Booking flow
       if (session.step === 1 && selection) {
         session.data.category = selection;
-        await sendInteractiveButtons(
-          from,
-          "Choose pickup vehicle:",
-          [
-            { id: "bike", title: "🏍️ Bike" },
-            { id: "van", title: "🚐 Van" },
-            { id: "truck", title: "🚛 Truck" },
-          ]
-        );
+        await sendInteractiveButtons(from, "Choose pickup vehicle:", [
+          { id: "bike", title: "🏍️ Bike" },
+          { id: "van", title: "🚐 Van" },
+          { id: "truck", title: "🚛 Truck" },
+        ]);
         session.step = 2;
         await setSession(from, session);
       } else if (session.step === 2 && selection) {
@@ -191,7 +213,6 @@ app.post("/webhook", async (req, res) => {
       } else if (session.step === 4 && messages.text) {
         session.data.address = messages.text.body;
 
-        // dynamic dates
         const today = new Date();
         const tomorrow = new Date(today);
         tomorrow.setDate(today.getDate() + 1);
@@ -225,19 +246,38 @@ app.post("/webhook", async (req, res) => {
       } else if (session.step === 7 && selection) {
         session.data.payment = selection;
 
-        // confirm to customer
+        // Confirm to customer
         await sendTextMessage(
           from,
           `✅ Booking Confirmed!\n\n📌 Category: ${session.data.category}\n🚚 Vehicle: ${session.data.vehicle}\n⚖️ Weight: ${session.data.weight}kg\n🏠 Address: ${session.data.address}\n📅 Date: ${session.data.date}\n⏰ Time: ${session.data.time}\n💰 Payment: ${session.data.payment}\n\nThank you for using Yagya ♻️`
         );
 
-        // notify owner
+        // Notify owner
         await sendTextMessage(
           ownerNumber,
           `🔔 New Order Received!\nCustomer: ${from}\nCategory: ${session.data.category}\nVehicle: ${session.data.vehicle}\nWeight: ${session.data.weight}kg\nAddress: ${session.data.address}\nDate: ${session.data.date}\nTime: ${session.data.time}\nPayment: ${session.data.payment}`
         );
 
-        await deleteSession(from); // reset session
+        // Save to MongoDB
+        const newOrder = new Order({
+          customer: from,
+          category: session.data.category,
+          vehicle: session.data.vehicle,
+          weight: session.data.weight,
+          address: session.data.address,
+          date: session.data.date,
+          time: session.data.time,
+          payment: session.data.payment,
+        });
+
+        try {
+          await newOrder.save();
+          console.log("✅ Order saved to MongoDB");
+        } catch (err) {
+          console.error("❌ MongoDB order save failed:", err);
+        }
+
+        await deleteSession(from); // reset
       }
     }
 
