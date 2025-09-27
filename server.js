@@ -5,6 +5,7 @@ import dotenv from "dotenv";
 import redis from "redis";
 import mongoose from "mongoose";
 import cors from "cors";
+import { sendOrderNotificationEmail, testEmailConfiguration } from "./emailService.js";
 
 dotenv.config();
 const app = express();
@@ -349,10 +350,32 @@ app.post("/webhook", async (req, res) => {
           });
 
           try {
+            console.log("💾 Attempting to save order to MongoDB...");
+            console.log("💾 Order data:", JSON.stringify(newOrder, null, 2));
+            
             await newOrder.save();
-            console.log("✅ Order saved to MongoDB");
+            console.log("✅ Order saved to MongoDB successfully");
+            console.log("💾 Order ID:", newOrder._id);
+            
+            // Send email notification after successful save
+            console.log("📧 Starting email notification process...");
+            const emailResult = await sendOrderNotificationEmail(newOrder);
+            
+            if (emailResult.success) {
+              console.log("✅ Order notification email sent successfully");
+              console.log("📧 Email Message ID:", emailResult.messageId);
+            } else {
+              console.error("❌ Failed to send order notification email:");
+              console.error("❌ Email Error:", emailResult.error);
+              console.error("❌ Email Error Code:", emailResult.code);
+              // Don't fail the order save if email fails
+              console.log("⚠️ Order was saved but email notification failed");
+            }
           } catch (err) {
-            console.error("❌ MongoDB order save failed:", err.message);
+            console.error("❌ MongoDB order save failed:");
+            console.error("❌ Error message:", err.message);
+            console.error("❌ Error code:", err.code);
+            console.error("❌ Full error:", err);
           }
 
           await deleteSession(from);
@@ -405,6 +428,65 @@ app.get("/api/orders", async (req, res) => {
   } catch (err) {
     console.error("Failed to fetch orders:", err.message);
     res.status(500).json({ error: "Failed to fetch orders" });
+  }
+});
+
+// Test email configuration endpoint
+app.get("/api/test-email", async (req, res) => {
+  try {
+    console.log("📧 API: Testing email configuration...");
+    const result = await testEmailConfiguration();
+    if (result.success) {
+      console.log("📧 API: Test email sent successfully");
+      res.json({ 
+        success: true, 
+        message: "Test email sent successfully", 
+        messageId: result.messageId 
+      });
+    } else {
+      console.error("📧 API: Test email failed:", result.error);
+      res.status(500).json({ 
+        success: false, 
+        error: result.error,
+        code: result.code
+      });
+    }
+  } catch (err) {
+    console.error("📧 API: Email test failed:", err.message);
+    res.status(500).json({ 
+      success: false, 
+      error: "Email test failed",
+      details: err.message
+    });
+  }
+});
+
+// Debug endpoint to check environment variables
+app.get("/api/debug/email-config", (req, res) => {
+  try {
+    const config = {
+      emailService: process.env.EMAIL_SERVICE || 'gmail',
+      emailUser: process.env.EMAIL_USER ? "✅ Set" : "❌ Not set",
+      emailPassword: process.env.EMAIL_PASSWORD ? "✅ Set" : "❌ Not set",
+      adminEmail: process.env.ADMIN_EMAIL ? "✅ Set" : "❌ Not set",
+      nodeEnv: process.env.NODE_ENV || "development",
+      timestamp: new Date().toISOString()
+    };
+    
+    console.log("🔍 Debug: Email configuration check requested");
+    console.log("🔍 Config:", JSON.stringify(config, null, 2));
+    
+    res.json({
+      success: true,
+      config: config,
+      message: "Email configuration status"
+    });
+  } catch (err) {
+    console.error("🔍 Debug: Failed to get email config:", err.message);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get email configuration"
+    });
   }
 });
 
