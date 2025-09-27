@@ -1,211 +1,45 @@
-import nodemailer from 'nodemailer';
+import sgMail from '@sendgrid/mail';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Alternative email services configuration
-const EMAIL_SERVICES = {
-  gmail: {
-    host: 'smtp.gmail.com',
-    port: 587,
-    secure: false,
-    requireTLS: true
-  },
-  outlook: {
-    host: 'smtp-mail.outlook.com',
-    port: 587,
-    secure: false,
-    requireTLS: true
-  },
-  yahoo: {
-    host: 'smtp.mail.yahoo.com',
-    port: 587,
-    secure: false,
-    requireTLS: true
-  },
-  sendgrid: {
-    host: 'smtp.sendgrid.net',
-    port: 587,
-    secure: false,
-    requireTLS: true
-  }
-};
-
-// Create transporter for email sending
-const createTransporter = () => {
+// Initialize SendGrid
+const initializeSendGrid = () => {
   try {
-    console.log("📧 Creating email transporter...");
-    console.log("📧 Email service:", process.env.EMAIL_SERVICE || 'gmail');
-    console.log("📧 Email user:", process.env.EMAIL_USER ? "✅ Set" : "❌ Not set");
-    console.log("📧 Email password:", process.env.EMAIL_PASSWORD ? "✅ Set" : "❌ Not set");
-    console.log("📧 Admin email:", process.env.ADMIN_EMAIL ? "✅ Set" : "❌ Not set");
+    console.log("📧 Initializing SendGrid...");
+    console.log("📧 SendGrid API Key:", process.env.SENDGRID_API_KEY ? "✅ Set" : "❌ Not set");
+    console.log("📧 From Email:", process.env.FROM_EMAIL ? "✅ Set" : "❌ Not set");
+    console.log("📧 Admin Email:", process.env.ADMIN_EMAIL ? "✅ Set" : "❌ Not set");
     
-    // Enhanced SMTP configuration for production environments
-    const smtpConfig = {
-      service: process.env.EMAIL_SERVICE || 'gmail',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
-      },
-      // Connection timeout settings
-      connectionTimeout: 60000, // 60 seconds
-      greetingTimeout: 30000,   // 30 seconds
-      socketTimeout: 60000,     // 60 seconds
-      // Retry settings
-      maxConnections: 5,
-      maxMessages: 100,
-      rateDelta: 20000, // 20 seconds
-      rateLimit: 5,     // 5 messages per rateDelta
-      // Security settings
-      secure: true,
-      tls: {
-        rejectUnauthorized: false
-      },
-      // Pool settings for better connection management
-      pool: true,
-      poolConfig: {
-        max: 5,
-        min: 0,
-        acquireTimeoutMillis: 30000,
-        createTimeoutMillis: 30000,
-        destroyTimeoutMillis: 5000,
-        idleTimeoutMillis: 30000,
-        reapIntervalMillis: 1000,
-        createRetryIntervalMillis: 200
-      }
-    };
-
-    // Use specific service configuration if available
-    const serviceName = process.env.EMAIL_SERVICE || 'gmail';
-    if (EMAIL_SERVICES[serviceName]) {
-      const serviceConfig = EMAIL_SERVICES[serviceName];
-      smtpConfig.host = serviceConfig.host;
-      smtpConfig.port = serviceConfig.port;
-      smtpConfig.secure = serviceConfig.secure;
-      smtpConfig.requireTLS = serviceConfig.requireTLS;
-      console.log(`📧 Using ${serviceName} SMTP configuration`);
+    if (!process.env.SENDGRID_API_KEY) {
+      throw new Error("SENDGRID_API_KEY is not set in environment variables");
     }
     
-    console.log("📧 SMTP Config:", JSON.stringify({
-      service: smtpConfig.service,
-      host: smtpConfig.host,
-      port: smtpConfig.port,
-      secure: smtpConfig.secure,
-      connectionTimeout: smtpConfig.connectionTimeout
-    }, null, 2));
-    
-    const transporter = nodemailer.createTransport(smtpConfig);
-    
-    console.log("✅ Email transporter created successfully");
-    return transporter;
+    sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+    console.log("✅ SendGrid initialized successfully");
+    return true;
   } catch (error) {
-    console.error("❌ Failed to create email transporter:", error.message);
-    throw error;
+    console.error("❌ Failed to initialize SendGrid:", error.message);
+    return false;
   }
 };
 
-// Function to send email with retry mechanism
-const sendEmailWithRetry = async (transporter, mailOptions, maxRetries = 3) => {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      console.log(`📧 Email attempt ${attempt}/${maxRetries}...`);
-      
-      if (attempt > 1) {
-        // Wait before retry (exponential backoff)
-        const delay = Math.pow(2, attempt - 1) * 1000; // 2s, 4s, 8s
-        console.log(`📧 Waiting ${delay}ms before retry...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
-      }
-      
-      const info = await transporter.sendMail(mailOptions);
-      console.log(`✅ Email sent successfully on attempt ${attempt}`);
-      return { success: true, messageId: info.messageId, attempt };
-      
-    } catch (error) {
-      console.error(`❌ Email attempt ${attempt} failed:`, error.message);
-      
-      if (attempt === maxRetries) {
-        console.error(`❌ All ${maxRetries} email attempts failed`);
-        throw error;
-      }
-      
-      // Check if it's a connection error that might be retryable
-      if (error.code === 'ETIMEDOUT' || error.code === 'ECONNRESET' || error.code === 'ENOTFOUND') {
-        console.log(`📧 Connection error detected, will retry...`);
-        continue;
-      } else {
-        // Non-retryable error
-        console.error(`❌ Non-retryable error:`, error.code);
-        throw error;
-      }
-    }
-  }
-};
-
-// Function to try alternative email services
-const tryAlternativeServices = async (orderData, mailOptions) => {
-  const services = ['gmail', 'outlook', 'yahoo'];
-  const currentService = process.env.EMAIL_SERVICE || 'gmail';
-  
-  // Remove current service from alternatives
-  const alternatives = services.filter(service => service !== currentService);
-  
-  for (const service of alternatives) {
-    try {
-      console.log(`📧 Trying alternative service: ${service}`);
-      
-      // Temporarily override the service
-      const originalService = process.env.EMAIL_SERVICE;
-      process.env.EMAIL_SERVICE = service;
-      
-      const transporter = createTransporter();
-      const result = await sendEmailWithRetry(transporter, mailOptions, 2); // Fewer retries for alternatives
-      
-      // Restore original service
-      process.env.EMAIL_SERVICE = originalService;
-      
-      console.log(`✅ Email sent successfully using ${service} service`);
-      return { success: true, messageId: result.messageId, service: service };
-      
-    } catch (error) {
-      console.error(`❌ Alternative service ${service} also failed:`, error.message);
-      // Restore original service
-      process.env.EMAIL_SERVICE = process.env.EMAIL_SERVICE || 'gmail';
-      continue;
-    }
-  }
-  
-  throw new Error('All email services failed');
-};
-
-// Function to send order notification email
+// Function to send order notification email using SendGrid
 export const sendOrderNotificationEmail = async (orderData) => {
   try {
-    console.log("📧 Starting order notification email process...");
+    console.log("📧 Starting order notification email process with SendGrid...");
     console.log("📧 Order data received:", JSON.stringify(orderData, null, 2));
     
-    const transporter = createTransporter();
-    
-    // Verify transporter connection with timeout
-    console.log("📧 Verifying email transporter connection...");
-    try {
-      await Promise.race([
-        transporter.verify(),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Connection verification timeout')), 30000)
-        )
-      ]);
-      console.log("✅ Email transporter connection verified");
-    } catch (verifyError) {
-      console.error("❌ Email connection verification failed:", verifyError.message);
-      // Continue anyway, sometimes verify fails but sending works
-      console.log("📧 Proceeding with email send despite verification failure...");
+    // Initialize SendGrid
+    const isInitialized = initializeSendGrid();
+    if (!isInitialized) {
+      throw new Error("SendGrid initialization failed");
     }
     
-    // Email template for order notification
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
-      to: process.env.ADMIN_EMAIL, // Email where notifications should be sent
+    // Create email message
+    const msg = {
+      to: process.env.ADMIN_EMAIL,
+      from: process.env.FROM_EMAIL,
       subject: `New Order Received - ${orderData.customer}`,
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
@@ -277,86 +111,93 @@ export const sendOrderNotificationEmail = async (orderData) => {
 
     // Log email details before sending
     console.log("📧 Email details:");
-    console.log("📧 From:", mailOptions.from);
-    console.log("📧 To:", mailOptions.to);
-    console.log("📧 Subject:", mailOptions.subject);
+    console.log("📧 From:", msg.from);
+    console.log("📧 To:", msg.to);
+    console.log("📧 Subject:", msg.subject);
     
-    // Send email with retry mechanism
-    console.log("📧 Sending email with retry mechanism...");
-    try {
-      const result = await sendEmailWithRetry(transporter, mailOptions);
-      console.log('✅ Order notification email sent successfully!');
-      console.log('📧 Message ID:', result.messageId);
-      console.log('📧 Attempt:', result.attempt);
-      return { success: true, messageId: result.messageId, attempt: result.attempt };
-    } catch (primaryError) {
-      console.error('❌ Primary email service failed:', primaryError.message);
-      console.log('📧 Attempting alternative email services...');
-      
-      // Try alternative services
-      try {
-        const altResult = await tryAlternativeServices(orderData, mailOptions);
-        console.log('✅ Email sent using alternative service:', altResult.service);
-        return { 
-          success: true, 
-          messageId: altResult.messageId, 
-          service: altResult.service,
-          fallback: true 
-        };
-      } catch (altError) {
-        console.error('❌ All email services failed');
-        throw primaryError; // Throw the original error
-      }
-    }
+    // Send email using SendGrid
+    console.log("📧 Sending email via SendGrid API...");
+    const response = await sgMail.send(msg);
+    
+    console.log('✅ Order notification email sent successfully via SendGrid!');
+    console.log('📧 Response Status:', response[0].statusCode);
+    console.log('📧 Message ID:', response[0].headers['x-message-id']);
+    
+    return { 
+      success: true, 
+      messageId: response[0].headers['x-message-id'],
+      statusCode: response[0].statusCode,
+      service: 'sendgrid'
+    };
     
   } catch (error) {
-    console.error('❌ Failed to send order notification email:');
+    console.error('❌ Failed to send order notification email via SendGrid:');
     console.error('❌ Error message:', error.message);
     console.error('❌ Error code:', error.code);
-    console.error('❌ Error response:', error.response);
+    console.error('❌ Error response:', error.response?.body);
     console.error('❌ Full error:', error);
-    return { success: false, error: error.message, code: error.code };
+    
+    return { 
+      success: false, 
+      error: error.message, 
+      code: error.code,
+      service: 'sendgrid'
+    };
   }
 };
 
-// Function to test email configuration
+// Function to test SendGrid configuration
 export const testEmailConfiguration = async () => {
   try {
-    console.log("📧 Starting email configuration test...");
-    const transporter = createTransporter();
+    console.log("📧 Starting SendGrid configuration test...");
     
-    // Verify connection first
-    console.log("📧 Verifying email connection for test...");
-    await transporter.verify();
-    console.log("✅ Email connection verified for test");
+    // Initialize SendGrid
+    const isInitialized = initializeSendGrid();
+    if (!isInitialized) {
+      throw new Error("SendGrid initialization failed");
+    }
     
-    const mailOptions = {
-      from: process.env.EMAIL_USER,
+    const msg = {
       to: process.env.ADMIN_EMAIL,
+      from: process.env.FROM_EMAIL,
       subject: 'Email Configuration Test - Yagya WhatsApp Bot',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
-          <h2 style="color: #27ae60;">✅ Email Configuration Test Successful</h2>
-          <p>This is a test email to verify that the email configuration is working correctly.</p>
+          <h2 style="color: #27ae60;">✅ SendGrid Email Configuration Test Successful</h2>
+          <p>This is a test email to verify that the SendGrid email configuration is working correctly.</p>
           <p><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+          <p><strong>Service:</strong> SendGrid API</p>
           <p>Your Yagya WhatsApp Bot email notifications are now ready!</p>
         </div>
       `
     };
 
-    console.log("📧 Sending test email with retry mechanism...");
-    const result = await sendEmailWithRetry(transporter, mailOptions);
-    console.log('✅ Test email sent successfully!');
-    console.log('📧 Test Message ID:', result.messageId);
-    console.log('📧 Test Attempt:', result.attempt);
-    return { success: true, messageId: result.messageId, attempt: result.attempt };
+    console.log("📧 Sending test email via SendGrid...");
+    const response = await sgMail.send(msg);
+    
+    console.log('✅ Test email sent successfully via SendGrid!');
+    console.log('📧 Test Response Status:', response[0].statusCode);
+    console.log('📧 Test Message ID:', response[0].headers['x-message-id']);
+    
+    return { 
+      success: true, 
+      messageId: response[0].headers['x-message-id'],
+      statusCode: response[0].statusCode,
+      service: 'sendgrid'
+    };
     
   } catch (error) {
-    console.error('❌ Email configuration test failed:');
+    console.error('❌ SendGrid configuration test failed:');
     console.error('❌ Test Error message:', error.message);
     console.error('❌ Test Error code:', error.code);
-    console.error('❌ Test Error response:', error.response);
+    console.error('❌ Test Error response:', error.response?.body);
     console.error('❌ Full test error:', error);
-    return { success: false, error: error.message, code: error.code };
+    
+    return { 
+      success: false, 
+      error: error.message, 
+      code: error.code,
+      service: 'sendgrid'
+    };
   }
 };

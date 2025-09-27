@@ -332,10 +332,15 @@ app.post("/webhook", async (req, res) => {
         } else if (session.step === 7 && selection) {
           session.data.payment = selection;
 
-          await sendTextMessage(
-            from,
-            `✅ Booking Confirmed!\n\n📌 Category: ${session.data.category}\n🚚 Vehicle: ${session.data.vehicle}\n⚖️ Weight: ${session.data.weight}kg\n🏠 Address: ${session.data.address}\n👤 Customer Name: ${session.data.customerName}\n📅 Date: ${session.data.date}\n⏰ Time: ${session.data.time}\n💰 Payment: ${session.data.payment}\n\nThank you for using Yagya ♻️`
-          );
+          // Check if order is already being processed to prevent duplicates
+          if (session.data.orderProcessing) {
+            console.log(`⚠️ Order already being processed for ${from}, ignoring duplicate request`);
+            return res.sendStatus(200);
+          }
+
+          // Mark order as being processed
+          session.data.orderProcessing = true;
+          await setSession(from, session);
 
           const newOrder = new Order({
             phoneNumber: from,
@@ -357,25 +362,45 @@ app.post("/webhook", async (req, res) => {
             console.log("✅ Order saved to MongoDB successfully");
             console.log("💾 Order ID:", newOrder._id);
             
-            // Send email notification after successful save
-            console.log("📧 Starting email notification process...");
-            const emailResult = await sendOrderNotificationEmail(newOrder);
+            // Send customer confirmation message FIRST (only once)
+            await sendTextMessage(
+              from,
+              `✅ Booking Confirmed!\n\n📌 Category: ${session.data.category}\n🚚 Vehicle: ${session.data.vehicle}\n⚖️ Weight: ${session.data.weight}kg\n🏠 Address: ${session.data.address}\n👤 Customer Name: ${session.data.customerName}\n📅 Date: ${session.data.date}\n⏰ Time: ${session.data.time}\n💰 Payment: ${session.data.payment}\n\nThank you for using Yagya ♻️`
+            );
+            console.log("✅ Customer confirmation message sent");
             
-            if (emailResult.success) {
-              console.log("✅ Order notification email sent successfully");
-              console.log("📧 Email Message ID:", emailResult.messageId);
-            } else {
-              console.error("❌ Failed to send order notification email:");
-              console.error("❌ Email Error:", emailResult.error);
-              console.error("❌ Email Error Code:", emailResult.code);
-              // Don't fail the order save if email fails
-              console.log("⚠️ Order was saved but email notification failed");
-            }
+            // Send email notification in background (non-blocking)
+            console.log("📧 Starting email notification process in background...");
+            sendOrderNotificationEmail(newOrder)
+              .then(emailResult => {
+                if (emailResult.success) {
+                  console.log("✅ Order notification email sent successfully");
+                  console.log("📧 Email Message ID:", emailResult.messageId);
+                  console.log("📧 Service:", emailResult.service);
+                  console.log("📧 Status Code:", emailResult.statusCode);
+                } else {
+                  console.error("❌ Failed to send order notification email:");
+                  console.error("❌ Email Error:", emailResult.error);
+                  console.error("❌ Email Error Code:", emailResult.code);
+                  console.log("⚠️ Order was saved but email notification failed");
+                }
+              })
+              .catch(emailError => {
+                console.error("❌ Email notification process failed:", emailError.message);
+                console.log("⚠️ Order was saved but email notification failed");
+              });
+            
           } catch (err) {
             console.error("❌ MongoDB order save failed:");
             console.error("❌ Error message:", err.message);
             console.error("❌ Error code:", err.code);
             console.error("❌ Full error:", err);
+            
+            // Send error message to customer
+            await sendTextMessage(
+              from,
+              "❌ Sorry, there was an error saving your order. Please try again or contact support."
+            );
           }
 
           await deleteSession(from);
@@ -465,21 +490,21 @@ app.get("/api/test-email", async (req, res) => {
 app.get("/api/debug/email-config", (req, res) => {
   try {
     const config = {
-      emailService: process.env.EMAIL_SERVICE || 'gmail',
-      emailUser: process.env.EMAIL_USER ? "✅ Set" : "❌ Not set",
-      emailPassword: process.env.EMAIL_PASSWORD ? "✅ Set" : "❌ Not set",
+      emailService: "SendGrid API",
+      sendgridApiKey: process.env.SENDGRID_API_KEY ? "✅ Set" : "❌ Not set",
+      fromEmail: process.env.FROM_EMAIL ? "✅ Set" : "❌ Not set",
       adminEmail: process.env.ADMIN_EMAIL ? "✅ Set" : "❌ Not set",
       nodeEnv: process.env.NODE_ENV || "development",
       timestamp: new Date().toISOString()
     };
     
-    console.log("🔍 Debug: Email configuration check requested");
+    console.log("🔍 Debug: SendGrid configuration check requested");
     console.log("🔍 Config:", JSON.stringify(config, null, 2));
     
     res.json({
       success: true,
       config: config,
-      message: "Email configuration status"
+      message: "SendGrid email configuration status"
     });
   } catch (err) {
     console.error("🔍 Debug: Failed to get email config:", err.message);
